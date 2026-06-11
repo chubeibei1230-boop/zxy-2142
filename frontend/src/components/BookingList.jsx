@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '../api.js';
 
-function BookingList({ bookings, daySummary, selectedDate, onEdit, onDelete, canEdit, canFeedback, onOpenFeedback, refreshKey }) {
+function BookingList({ bookings, daySummary, selectedDate, onEdit, onDelete, canEdit, canFeedback, isBookingEnded, onOpenFeedback, refreshKey }) {
   const [expandedLog, setExpandedLog] = useState(null);
   const [changeLogs, setChangeLogs] = useState({});
   const [expandedFeedback, setExpandedFeedback] = useState(null);
@@ -46,12 +46,6 @@ function BookingList({ bookings, daySummary, selectedDate, onEdit, onDelete, can
     abnormal: { text: '异常结束', cls: 'tag-exec-abnormal' }
   };
 
-  const isDatePassed = (b) => {
-    const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-    return b.date_end < todayStr || (b.date_end === todayStr);
-  };
-
   if (bookings.length === 0) {
     return (
       <div className="empty-state">
@@ -89,7 +83,7 @@ function BookingList({ bookings, daySummary, selectedDate, onEdit, onDelete, can
       <div className="booking-list">
         {bookings.map(b => {
         const execStatus = b.execution_status || 'pending';
-        const needsFeedback = !b.has_feedback && isDatePassed(b) && b.status !== 'cancelled' && ['pending', 'ongoing'].includes(execStatus);
+        const needsFeedback = !b.has_feedback && isBookingEnded(b) && b.status !== 'cancelled' && ['pending', 'ongoing'].includes(execStatus);
         const cardCls = [
           'booking-card',
           b.status === 'adjusted' ? 'adjusted' : '',
@@ -191,7 +185,7 @@ function BookingList({ bookings, daySummary, selectedDate, onEdit, onDelete, can
                   <button className="btn-danger btn-small" onClick={() => onDelete(b.id)}>删除</button>
                 </>
               )}
-              {canFeedback && isDatePassed(b) && b.status !== 'cancelled' && (
+              {canFeedback(b) && isBookingEnded(b) && b.status !== 'cancelled' && (
                 <button
                   className={b.has_feedback ? 'btn-secondary btn-small' : 'btn-primary btn-small'}
                   onClick={() => onOpenFeedback(b)}
@@ -240,20 +234,53 @@ function BookingList({ bookings, daySummary, selectedDate, onEdit, onDelete, can
                 {feedbackHistory[b.id].length === 0 ? (
                   <div style={{ fontSize: '13px', color: '#9ca3af' }}>暂无反馈记录</div>
                 ) : (
-                  feedbackHistory[b.id].map((fb, idx) => (
+                  feedbackHistory[b.id].map((fb, idx) => {
+                    let beforeData = null;
+                    if (fb.before_snapshot) {
+                      try { beforeData = JSON.parse(fb.before_snapshot); } catch (e) {}
+                    }
+                    return (
                     <div key={fb.id || idx} className="log-entry feedback-history">
                       <div className="log-header">
                         <span className="log-type">v{fb.version} - {executionStatusLabel[fb.execution_result]?.text || fb.execution_result}</span>
                         <span className="log-time">{fb.updated_at || fb.created_at}</span>
                       </div>
                       <div className="log-operator">提交人：{fb.creator_name}{fb.updater_name && fb.updater_name !== fb.creator_name && ` → 修改：${fb.updater_name}`}</div>
-                      <div style={{ fontSize: '13px', color: '#4b5563', marginTop: '6px' }}>
-                        实际到场 {fb.actual_attendance} 人 · 人员：{fb.actual_staff || '-'}
-                      </div>
-                      {fb.feedback_note && <div className="log-reason">备注：{fb.feedback_note}</div>}
+
+                      {beforeData && (
+                        <div style={{ marginTop: '10px', border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden' }}>
+                          <div style={{ background: '#fef2f2', padding: '6px 12px', fontSize: '12px', fontWeight: 600, color: '#991b1b', borderBottom: '1px solid #fecaca' }}>📝 修改前（v{beforeData.version}）</div>
+                          <div style={{ padding: '10px 12px', fontSize: '13px', background: '#fff' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
+                              <div><span style={{ color: '#6b7280' }}>执行结果：</span>{executionStatusLabel[beforeData.execution_result]?.text || beforeData.execution_result}</div>
+                              <div><span style={{ color: '#6b7280' }}>实际到场：</span>{beforeData.actual_attendance} 人</div>
+                              <div style={{ gridColumn: '1 / -1' }}><span style={{ color: '#6b7280' }}>实际人员：</span>{beforeData.actual_staff || '-'}</div>
+                              {beforeData.feedback_note && <div style={{ gridColumn: '1 / -1' }}><span style={{ color: '#6b7280' }}>备注：</span>{beforeData.feedback_note}</div>}
+                            </div>
+                          </div>
+                          <div style={{ background: '#f0fdf4', padding: '6px 12px', fontSize: '12px', fontWeight: 600, color: '#166534', borderTop: '1px solid #bbf7d0', borderBottom: '1px solid #bbf7d0' }}>✅ 修改后（v{fb.version}）</div>
+                          <div style={{ padding: '10px 12px', fontSize: '13px', background: '#fff' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
+                              <div><span style={{ color: '#6b7280' }}>执行结果：</span><strong style={beforeData.execution_result !== fb.execution_result ? { color: '#166534' } : {}}>{executionStatusLabel[fb.execution_result]?.text || fb.execution_result}{beforeData.execution_result !== fb.execution_result && ' ←'}</strong></div>
+                              <div><span style={{ color: '#6b7280' }}>实际到场：</span><strong style={beforeData.actual_attendance !== fb.actual_attendance ? { color: '#166534' } : {}}>{fb.actual_attendance} 人{beforeData.actual_attendance !== fb.actual_attendance && ' ←'}</strong></div>
+                              <div style={{ gridColumn: '1 / -1' }}><span style={{ color: '#6b7280' }}>实际人员：</span><strong style={beforeData.actual_staff !== fb.actual_staff ? { color: '#166534' } : {}}>{fb.actual_staff || '-'}{beforeData.actual_staff !== fb.actual_staff && ' ←'}</strong></div>
+                              {fb.feedback_note && <div style={{ gridColumn: '1 / -1' }}><span style={{ color: '#6b7280' }}>备注：</span><strong style={beforeData.feedback_note !== fb.feedback_note ? { color: '#166534' } : {}}>{fb.feedback_note}{beforeData.feedback_note !== fb.feedback_note && ' ←'}</strong></div>}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {!beforeData && (
+                        <div style={{ fontSize: '13px', color: '#4b5563', marginTop: '6px' }}>
+                          实际到场 {fb.actual_attendance} 人 · 人员：{fb.actual_staff || '-'}
+                        </div>
+                      )}
+
+                      {fb.feedback_note && !beforeData && <div className="log-reason">备注：{fb.feedback_note}</div>}
                       {fb.change_reason && <div className="log-reason">变更原因：{fb.change_reason}</div>}
                     </div>
-                  ))
+                  );
+                  })
                 )}
               </div>
             )}

@@ -237,6 +237,7 @@ class BookingFeedback(BookingFeedbackBase):
     version: int
     creator_name: Optional[str] = None
     updater_name: Optional[str] = None
+    before_snapshot: Optional[str] = None
 
     class Config:
         from_attributes = True

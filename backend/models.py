@@ -127,6 +127,7 @@ class BookingFeedback(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     change_reason = Column(Text)
     version = Column(Integer, default=1)
+    before_snapshot = Column(Text)
 
     booking = relationship("Booking", back_populates="feedbacks")
     creator = relationship("User", foreign_keys=[created_by])

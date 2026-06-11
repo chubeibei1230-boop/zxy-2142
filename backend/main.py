@@ -824,6 +824,17 @@ def can_submit_feedback(booking: models.Booking, user: models.User) -> bool:
     return False
 
 
+def is_booking_ended(booking: models.Booking) -> bool:
+    now = datetime.now()
+    end_datetime_str = f"{booking.date_end} {booking.time_end}"
+    try:
+        end_datetime = datetime.strptime(end_datetime_str, "%Y-%m-%d %H:%M")
+        return now >= end_datetime
+    except (ValueError, TypeError):
+        today = date.today()
+        return booking.date_end <= today
+
+
 @app.post("/api/bookings/{booking_id}/feedbacks")
 def create_feedback(
     booking_id: int,
@@ -841,8 +852,7 @@ def create_feedback(
     if booking.status == "cancelled":
         raise HTTPException(status_code=400, detail="已取消的预约无法提交反馈")
 
-    today = date.today()
-    if booking.date_end > today:
+    if not is_booking_ended(booking):
         raise HTTPException(status_code=400, detail="预约尚未结束，暂不可提交反馈")
 
     if payload.execution_result not in VALID_RESULTS:
@@ -928,17 +938,36 @@ def update_feedback(
     if "execution_result" in update_data and update_data["execution_result"] not in VALID_RESULTS:
         raise HTTPException(status_code=400, detail=f"执行结果无效，可选值：{', '.join(VALID_RESULTS)}")
 
-    for key, val in update_data.items():
-        if hasattr(latest, key) and val is not None:
-            setattr(latest, key, val)
+    before_snapshot = json.dumps({
+        "actual_attendance": latest.actual_attendance,
+        "actual_staff": latest.actual_staff,
+        "execution_result": latest.execution_result,
+        "feedback_note": latest.feedback_note,
+        "version": latest.version
+    }, ensure_ascii=False)
 
-    latest.version += 1
-    latest.updated_by = user.id
-    latest.change_reason = payload.change_reason or f"修改反馈（v{latest.version}）"
+    new_feedback = models.BookingFeedback(
+        booking_id=booking_id,
+        actual_attendance=latest.actual_attendance,
+        actual_staff=latest.actual_staff,
+        execution_result=latest.execution_result,
+        feedback_note=latest.feedback_note,
+        created_by=latest.created_by,
+        created_at=latest.created_at,
+        updated_by=user.id,
+        change_reason=payload.change_reason or f"修改反馈（v{latest.version + 1}）",
+        version=latest.version + 1,
+        before_snapshot=before_snapshot
+    )
+
+    for key, val in update_data.items():
+        if hasattr(new_feedback, key) and val is not None:
+            setattr(new_feedback, key, val)
 
     if "execution_result" in update_data:
         booking.execution_status = update_data["execution_result"]
 
+    db.add(new_feedback)
     db.flush()
     after_data = json.dumps(booking_to_dict(booking, include_feedback=True), ensure_ascii=False)
 
@@ -953,23 +982,24 @@ def update_feedback(
     db.add(log)
 
     db.commit()
-    db.refresh(latest)
+    db.refresh(new_feedback)
 
     return {
-        "id": latest.id,
-        "booking_id": latest.booking_id,
-        "actual_attendance": latest.actual_attendance,
-        "actual_staff": latest.actual_staff,
-        "execution_result": latest.execution_result,
-        "feedback_note": latest.feedback_note,
-        "change_reason": latest.change_reason,
-        "created_by": latest.created_by,
-        "creator_name": latest.creator.full_name if latest.creator else None,
-        "created_at": str(latest.created_at),
-        "updated_by": latest.updated_by,
-        "updater_name": latest.updater.full_name if latest.updater else None,
-        "updated_at": str(latest.updated_at),
-        "version": latest.version
+        "id": new_feedback.id,
+        "booking_id": new_feedback.booking_id,
+        "actual_attendance": new_feedback.actual_attendance,
+        "actual_staff": new_feedback.actual_staff,
+        "execution_result": new_feedback.execution_result,
+        "feedback_note": new_feedback.feedback_note,
+        "change_reason": new_feedback.change_reason,
+        "created_by": new_feedback.created_by,
+        "creator_name": new_feedback.creator.full_name if new_feedback.creator else None,
+        "created_at": str(new_feedback.created_at),
+        "updated_by": new_feedback.updated_by,
+        "updater_name": new_feedback.updater.full_name if new_feedback.updater else None,
+        "updated_at": str(new_feedback.updated_at),
+        "version": new_feedback.version,
+        "before_snapshot": new_feedback.before_snapshot
     }
 
 
@@ -1003,7 +1033,8 @@ def get_booking_feedbacks(
             "updated_by": fb.updated_by,
             "updater_name": fb.updater.full_name if fb.updater else None,
             "updated_at": str(fb.updated_at) if fb.updated_at else None,
-            "version": fb.version
+            "version": fb.version,
+            "before_snapshot": fb.before_snapshot
         })
     return result
 

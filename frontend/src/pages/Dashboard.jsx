@@ -102,7 +102,22 @@ function Dashboard({ user }) {
   }, [filteredBookings]);
 
   const canEdit = user.role !== 'auditor';
-  const canFeedback = user.role !== 'auditor';
+  const canFeedback = (booking) => {
+    if (user.role === 'auditor') return false;
+    if (user.role === 'admin') return true;
+    return booking.created_by === user.id;
+  };
+  const isBookingEnded = (b) => {
+    const now = new Date();
+    const endStr = `${b.date_end}T${b.time_end}:00`;
+    const endTime = new Date(endStr);
+    if (isNaN(endTime.getTime())) {
+      const today = new Date();
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      return b.date_end < todayStr || (b.date_end === todayStr);
+    }
+    return now >= endTime;
+  };
 
   const openCreate = () => {
     setEditingBooking(null);
@@ -249,7 +264,7 @@ function Dashboard({ user }) {
                           <span className="reminder-item-title">{r.title}</span>
                         </div>
                         <div style={{ display: 'flex', gap: '6px' }}>
-                          {r.reminder_type === 'need_feedback' && canFeedback && (
+                          {r.reminder_type === 'need_feedback' && canFeedback(r) && (
                             <button className="btn-primary btn-small" onClick={() => {
                               setSelectedDate(r.date_start);
                               setShowReminderPanel(false);
@@ -306,6 +321,7 @@ function Dashboard({ user }) {
               onDelete={handleDelete}
               canEdit={canEdit}
               canFeedback={canFeedback}
+              isBookingEnded={isBookingEnded}
               onOpenFeedback={openFeedback}
               refreshKey={refreshKey}
             />
