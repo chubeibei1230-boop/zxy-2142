@@ -79,7 +79,8 @@ function Calendar({ currentMonth, setCurrentMonth, selectedDate, setSelectedDate
             'calendar-cell',
             cell.otherMonth ? 'other-month' : '',
             isToday ? 'today' : '',
-            isSelected ? 'selected' : ''
+            isSelected ? 'selected' : '',
+            stats && stats.conflict_count > 0 ? 'has-conflict-day' : ''
           ].filter(Boolean).join(' ');
 
           return (
@@ -87,7 +88,7 @@ function Calendar({ currentMonth, setCurrentMonth, selectedDate, setSelectedDate
               key={i}
               className={cls}
               onClick={() => setSelectedDate(cell.date)}
-              title={stats ? `${cell.date}：${stats.booking_count}场，${stats.total_visitors}人` : cell.date}
+              title={stats ? `${cell.date}：${stats.booking_count}场，${stats.total_visitors}人${stats.conflict_count > 0 ? `，⚠️${stats.conflict_count}冲突` : ''}` : cell.date}
             >
               <span className="cell-day">{cell.day}</span>
               {stats && stats.booking_count > 0 && (
@@ -96,6 +97,7 @@ function Calendar({ currentMonth, setCurrentMonth, selectedDate, setSelectedDate
                   <br />
                   {stats.total_visitors}人
                   {stats.cross_day_count > 0 && <><br />跨{stats.cross_day_count}</>}
+                  {stats.conflict_count > 0 && <><br /><span className="conflict-indicator">⚠️{stats.conflict_count}冲突</span></>}
                 </div>
               )}
             </div>
@@ -107,6 +109,7 @@ function Calendar({ currentMonth, setCurrentMonth, selectedDate, setSelectedDate
         <div className="legend-item"><span className="legend-dot" style={{ background: '#dbeafe' }}></span>今天</div>
         <div className="legend-item"><span className="legend-dot" style={{ background: '#3b82f6' }}></span>已选日期</div>
         <div className="legend-item"><span className="legend-dot" style={{ background: '#e0e7ff' }}></span>预约数</div>
+        <div className="legend-item"><span className="legend-dot" style={{ background: '#fca5a5' }}></span>存在冲突</div>
       </div>
     </div>
   );

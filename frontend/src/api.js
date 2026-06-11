@@ -56,6 +56,7 @@ export const api = {
   updateBooking: (id, data) => request(`/bookings/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteBooking: (id) => request(`/bookings/${id}`, { method: 'DELETE' }),
   getBookingChangeLogs: (id) => request(`/bookings/${id}/change-logs`),
+  checkConflict: (data) => request('/bookings/check-conflict', { method: 'POST', body: JSON.stringify(data) }),
 
   listChangeLogs: (start, end) => {
     const params = new URLSearchParams();

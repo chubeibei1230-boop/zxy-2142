@@ -58,7 +58,8 @@ function BookingList({ bookings, daySummary, selectedDate, onEdit, onDelete, can
             b.status === 'adjusted' ? 'adjusted' : '',
             b.status === 'cancelled' ? 'cancelled' : '',
             b.is_cross_day && b.is_start_day ? 'cross-start' : '',
-            b.is_cross_day && !b.is_start_day ? 'cross-end' : ''
+            b.is_cross_day && !b.is_start_day ? 'cross-end' : '',
+            b.has_conflict ? 'has-conflict' : ''
           ].filter(Boolean).join(' ');
 
           const staffNames = (b.staff_list || []).map(s => s.name).join('、') || '未指派';
@@ -68,12 +69,29 @@ function BookingList({ bookings, daySummary, selectedDate, onEdit, onDelete, can
               <div className="booking-header">
                 <div className="booking-title">{b.title}</div>
                 <div className="booking-tags">
+                  {b.has_conflict && <span className="tag tag-conflict">⚠️ 冲突</span>}
                   {b.display_tag && <span className="tag tag-cross">{b.display_tag}</span>}
                   {statusLabel[b.status] && (
                     <span className={`tag ${statusLabel[b.status].cls}`}>{statusLabel[b.status].text}</span>
                   )}
                 </div>
               </div>
+              {b.has_conflict && (b.conflicts || []).length > 0 && (
+                <div className="conflict-warning-bar">
+                  <div className="conflict-warning-title">⚠️ 资源冲突详情：</div>
+                  {(b.conflicts || []).map((c, i) => (
+                    <div key={i} className="conflict-warning-item">
+                      <span className={`conflict-type-tag tag-${c.conflict_type}`}>
+                        {c.conflict_type === 'venue' ? '讲解点冲突' : '讲解员冲突'}
+                      </span>
+                      <span>预约「{c.booking_title}」</span>
+                      <span>📍 {c.venue_name}</span>
+                      <span>⏰ {c.date_start === c.date_end ? `${c.date_start} ${c.time_start}-${c.time_end}` : `${c.date_start} ${c.time_start} ~ ${c.date_end} ${c.time_end}`}</span>
+                      {c.conflict_type === 'staff' && c.staff_name && <span>🧑‍🏫 {c.staff_name}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="booking-meta">
                 <div className="meta-item">
                   <span className="meta-label">讲解点：</span>

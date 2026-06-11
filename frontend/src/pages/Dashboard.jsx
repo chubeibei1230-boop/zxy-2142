@@ -127,6 +127,7 @@ function Dashboard({ user }) {
           staff={staff}
           timeSlots={timeSlots}
           defaultDate={selectedDate}
+          user={user}
         />
       )}
     </div>

@@ -117,8 +117,89 @@ def check_staff_in_use(db: Session, staff_id: int):
     return count
 
 
-def booking_to_dict(b: models.Booking):
-    return {
+def times_overlap(s1, e1, s2, e2):
+    try:
+        from datetime import datetime as dt
+        t1 = dt.strptime(s1, "%H:%M").time()
+        t2 = dt.strptime(e1, "%H:%M").time()
+        t3 = dt.strptime(s2, "%H:%M").time()
+        t4 = dt.strptime(e2, "%H:%M").time()
+        return t1 < t4 and t3 < t2
+    except ValueError:
+        return False
+
+
+def dates_overlap(ds1, de1, ds2, de2):
+    return ds1 <= de2 and ds2 <= de1
+
+
+def check_booking_conflicts(db: Session, venue_id: int, date_start, date_end, time_start: str, time_end: str, staff_ids: list, exclude_booking_id: int = None):
+    conflicts = []
+
+    q = db.query(models.Booking).filter(
+        models.Booking.status != "cancelled"
+    )
+    if exclude_booking_id:
+        q = q.filter(models.Booking.id != exclude_booking_id)
+
+    bookings = q.all()
+
+    for b in bookings:
+        if not dates_overlap(date_start, date_end, b.date_start, b.date_end):
+            continue
+
+        if date_start == b.date_start and date_end == b.date_end and date_start == date_end:
+            if not times_overlap(time_start, time_end, b.time_start, b.time_end):
+                continue
+        elif date_start < b.date_end and date_end > b.date_start:
+            pass
+
+        if b.venue_id == venue_id:
+            conflicts.append({
+                "booking_id": b.id,
+                "booking_title": b.title,
+                "venue_name": b.venue.name if b.venue else "未知",
+                "date_start": str(b.date_start),
+                "date_end": str(b.date_end),
+                "time_start": b.time_start,
+                "time_end": b.time_end,
+                "conflict_type": "venue",
+                "staff_name": None
+            })
+
+        for sid in staff_ids:
+            for bs in b.staff_assignments:
+                if bs.staff_id == sid:
+                    overlaps_time = True
+                    if date_start == b.date_start and date_end == b.date_end and date_start == date_end:
+                        overlaps_time = times_overlap(time_start, time_end, b.time_start, b.time_end)
+                    if overlaps_time:
+                        staff = db.query(models.Staff).filter(models.Staff.id == sid).first()
+                        conflicts.append({
+                            "booking_id": b.id,
+                            "booking_title": b.title,
+                            "venue_name": b.venue.name if b.venue else "未知",
+                            "date_start": str(b.date_start),
+                            "date_end": str(b.date_end),
+                            "time_start": b.time_start,
+                            "time_end": b.time_end,
+                            "conflict_type": "staff",
+                            "staff_name": staff.name if staff else "未知"
+                        })
+
+    seen = set()
+    unique = []
+    for c in conflicts:
+        key = (c["booking_id"], c["conflict_type"], c.get("staff_name"))
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+
+    return unique
+
+
+def booking_to_dict(b: models.Booking, include_conflicts=False, db=None):
+    result = {
         "id": b.id,
         "title": b.title,
         "venue_id": b.venue_id,
@@ -137,6 +218,16 @@ def booking_to_dict(b: models.Booking):
         "is_cross_day": b.date_end > b.date_start,
         "staff_list": [{"id": s.staff.id, "name": s.staff.name, "title": s.staff.title} for s in b.staff_assignments]
     }
+    if include_conflicts and db:
+        staff_ids = [s.staff_id for s in b.staff_assignments]
+        conflicts = check_booking_conflicts(
+            db, b.venue_id, b.date_start, b.date_end,
+            b.time_start, b.time_end, staff_ids,
+            exclude_booking_id=b.id
+        )
+        result["has_conflict"] = len(conflicts) > 0
+        result["conflicts"] = conflicts
+    return result
 
 
 @app.post("/api/auth/login")
@@ -294,7 +385,7 @@ def get_bookings_by_date(target_date: date, db: Session = Depends(get_db), user:
 
     result = []
     for b in bookings:
-        b_dict = booking_to_dict(b)
+        b_dict = booking_to_dict(b, include_conflicts=True, db=db)
         is_start_day = b.date_start == target_date
         is_end_day = b.date_end == target_date
         is_cross = b.date_end > b.date_start
@@ -331,7 +422,40 @@ def get_monthly_stats(year: int, month: int, db: Session = Depends(get_db), user
     stats = {}
     for d in range((end_of_month - start_of_month).days + 1):
         cur = start_of_month + timedelta(days=d)
-        stats[str(cur)] = {"date": str(cur), "booking_count": 0, "total_visitors": 0, "cross_day_count": 0}
+        stats[str(cur)] = {"date": str(cur), "booking_count": 0, "total_visitors": 0, "cross_day_count": 0, "conflict_count": 0}
+
+    conflict_pairs = set()
+    active_bookings = [b for b in bookings if b.status != "cancelled"]
+    for i in range(len(active_bookings)):
+        for j in range(i + 1, len(active_bookings)):
+            bi = active_bookings[i]
+            bj = active_bookings[j]
+            if not dates_overlap(bi.date_start, bi.date_end, bj.date_start, bj.date_end):
+                continue
+            has_conflict = False
+            if bi.venue_id == bj.venue_id:
+                same_day = (bi.date_start == bi.date_end == bj.date_start == bj.date_end)
+                if same_day:
+                    has_conflict = times_overlap(bi.time_start, bi.time_end, bj.time_start, bj.time_end)
+                else:
+                    has_conflict = True
+            if not has_conflict:
+                si_ids = {s.staff_id for s in bi.staff_assignments}
+                sj_ids = {s.staff_id for s in bj.staff_assignments}
+                shared = si_ids & sj_ids
+                if shared:
+                    same_day = (bi.date_start == bi.date_end == bj.date_start == bj.date_end)
+                    if same_day:
+                        has_conflict = times_overlap(bi.time_start, bi.time_end, bj.time_start, bj.time_end)
+                    else:
+                        has_conflict = True
+            if has_conflict:
+                conflict_pairs.add((bi.id, bj.id))
+
+    booking_conflict_ids = set()
+    for (id1, id2) in conflict_pairs:
+        booking_conflict_ids.add(id1)
+        booking_conflict_ids.add(id2)
 
     for b in bookings:
         d = b.date_start
@@ -344,9 +468,21 @@ def get_monthly_stats(year: int, month: int, db: Session = Depends(get_db), user
                     stats[key]["total_visitors"] += (b.visitor_count or 0)
                 if b.date_end > b.date_start:
                     stats[key]["cross_day_count"] += 1
+                if b.id in booking_conflict_ids:
+                    stats[key]["conflict_count"] += 1
             d += timedelta(days=1)
 
     return list(stats.values())
+
+
+@app.post("/api/bookings/check-conflict")
+def check_conflict(payload: schemas.ConflictCheckRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    conflicts = check_booking_conflicts(
+        db, payload.venue_id, payload.date_start, payload.date_end,
+        payload.time_start, payload.time_end, payload.staff_ids,
+        payload.exclude_booking_id
+    )
+    return {"has_conflict": len(conflicts) > 0, "conflicts": conflicts}
 
 
 @app.post("/api/bookings")
@@ -356,6 +492,22 @@ def create_booking(payload: schemas.BookingCreate, db: Session = Depends(get_db)
     booking_data = payload.model_dump()
     staff_ids = booking_data.pop("staff_ids", [])
     change_reason = booking_data.pop("change_reason", None)
+    force_save = booking_data.pop("force_save", False)
+
+    conflicts = check_booking_conflicts(
+        db, payload.venue_id, payload.date_start, payload.date_end,
+        payload.time_start, payload.time_end, staff_ids
+    )
+    if conflicts and not force_save:
+        raise HTTPException(status_code=409, detail={
+            "message": "存在资源冲突，请调整后再保存，或注明原因后强制保存",
+            "conflicts": conflicts
+        })
+    if conflicts and force_save:
+        if user.role != "admin":
+            raise HTTPException(status_code=403, detail="仅管理员可强制保存存在冲突的预约")
+        if not change_reason or not change_reason.strip():
+            raise HTTPException(status_code=400, detail="强制保存冲突预约必须填写调整/覆盖原因")
 
     db_booking = models.Booking(**booking_data, created_by=user.id)
     db.add(db_booking)
@@ -366,12 +518,15 @@ def create_booking(payload: schemas.BookingCreate, db: Session = Depends(get_db)
         db.add(bs)
 
     after_data = json.dumps(booking_to_dict(db_booking), ensure_ascii=False)
+    log_reason = change_reason or "创建预约"
+    if conflicts and force_save:
+        log_reason = f"[强制保存-冲突] {change_reason}"
     log = models.ChangeLog(
         booking_id=db_booking.id,
         operator_id=user.id,
         change_type="create",
         after_data=after_data,
-        change_reason=change_reason or "创建预约"
+        change_reason=log_reason
     )
     db.add(log)
 
@@ -390,6 +545,7 @@ def update_booking(booking_id: int, payload: schemas.BookingUpdate, db: Session 
     update_data = payload.model_dump(exclude_unset=True)
     staff_ids = update_data.pop("staff_ids", None)
     change_reason = update_data.pop("change_reason", None)
+    force_save = update_data.pop("force_save", False)
 
     for key, val in update_data.items():
         if hasattr(db_booking, key) and val is not None:
@@ -402,16 +558,40 @@ def update_booking(booking_id: int, payload: schemas.BookingUpdate, db: Session 
         for sid in staff_ids:
             db.add(models.BookingStaff(booking_id=booking_id, staff_id=sid))
 
+    final_staff_ids = staff_ids if staff_ids is not None else [s.staff_id for s in db_booking.staff_assignments]
+    conflicts = check_booking_conflicts(
+        db, db_booking.venue_id, db_booking.date_start, db_booking.date_end,
+        db_booking.time_start, db_booking.time_end, final_staff_ids,
+        exclude_booking_id=booking_id
+    )
+    if conflicts and not force_save:
+        db.rollback()
+        raise HTTPException(status_code=409, detail={
+            "message": "存在资源冲突，请调整后再保存，或注明原因后强制保存",
+            "conflicts": conflicts
+        })
+    if conflicts and force_save:
+        if user.role != "admin":
+            db.rollback()
+            raise HTTPException(status_code=403, detail="仅管理员可强制保存存在冲突的预约")
+        if not change_reason or not change_reason.strip():
+            db.rollback()
+            raise HTTPException(status_code=400, detail="强制保存冲突预约必须填写调整/覆盖原因")
+
     db.flush()
     after_data = json.dumps(booking_to_dict(db_booking), ensure_ascii=False)
     change_type = "adjust" if payload.status == "adjusted" or change_reason else "update"
+    log_reason = change_reason or "更新预约"
+    if conflicts and force_save:
+        log_reason = f"[强制保存-冲突] {change_reason}"
+        change_type = "adjust"
     log = models.ChangeLog(
         booking_id=booking_id,
         operator_id=user.id,
         change_type=change_type,
         before_data=before_data,
         after_data=after_data,
-        change_reason=change_reason or "更新预约"
+        change_reason=log_reason
     )
     db.add(log)
 

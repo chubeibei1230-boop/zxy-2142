@@ -110,6 +110,7 @@ class BookingBase(BaseModel):
 class BookingCreate(BookingBase):
     staff_ids: List[int] = []
     change_reason: Optional[str] = None
+    force_save: bool = False
 
 
 class BookingUpdate(BaseModel):
@@ -124,6 +125,7 @@ class BookingUpdate(BaseModel):
     status: Optional[str] = None
     staff_ids: Optional[List[int]] = None
     change_reason: Optional[str] = None
+    force_save: bool = False
 
 
 class Booking(BookingBase):
@@ -170,8 +172,36 @@ class ScheduleSnapshot(ScheduleSnapshotBase):
         from_attributes = True
 
 
+class ConflictCheckRequest(BaseModel):
+    venue_id: int
+    date_start: date
+    date_end: date
+    time_start: str
+    time_end: str
+    staff_ids: List[int] = []
+    exclude_booking_id: Optional[int] = None
+
+
+class ConflictInfo(BaseModel):
+    booking_id: int
+    booking_title: str
+    venue_name: str
+    date_start: str
+    date_end: str
+    time_start: str
+    time_end: str
+    conflict_type: str
+    staff_name: Optional[str] = None
+
+
+class ConflictCheckResponse(BaseModel):
+    has_conflict: bool
+    conflicts: List[ConflictInfo] = []
+
+
 class DayBookingStats(BaseModel):
     date: date
     booking_count: int
     total_visitors: int
     cross_day_booking_count: int
+    conflict_count: int = 0
