@@ -198,7 +198,11 @@ def check_booking_conflicts(db: Session, venue_id: int, date_start, date_end, ti
     return unique
 
 
-def booking_to_dict(b: models.Booking, include_conflicts=False, db=None):
+def booking_to_dict(b: models.Booking, include_conflicts=False, db=None, include_feedback=False):
+    latest_feedback = None
+    if b.feedbacks and len(b.feedbacks) > 0:
+        latest_feedback = max(b.feedbacks, key=lambda f: f.version)
+
     result = {
         "id": b.id,
         "title": b.title,
@@ -211,13 +215,31 @@ def booking_to_dict(b: models.Booking, include_conflicts=False, db=None):
         "visitor_count": b.visitor_count,
         "remark": b.remark,
         "status": b.status,
+        "execution_status": b.execution_status,
         "created_by": b.created_by,
         "creator_name": b.creator.full_name if b.creator else None,
         "created_at": str(b.created_at),
         "updated_at": str(b.updated_at),
         "is_cross_day": b.date_end > b.date_start,
-        "staff_list": [{"id": s.staff.id, "name": s.staff.name, "title": s.staff.title} for s in b.staff_assignments]
+        "staff_list": [{"id": s.staff.id, "name": s.staff.name, "title": s.staff.title} for s in b.staff_assignments],
+        "has_feedback": latest_feedback is not None,
     }
+    if include_feedback and latest_feedback:
+        result["feedback"] = {
+            "id": latest_feedback.id,
+            "actual_attendance": latest_feedback.actual_attendance,
+            "actual_staff": latest_feedback.actual_staff,
+            "execution_result": latest_feedback.execution_result,
+            "feedback_note": latest_feedback.feedback_note,
+            "change_reason": latest_feedback.change_reason,
+            "created_by": latest_feedback.created_by,
+            "creator_name": latest_feedback.creator.full_name if latest_feedback.creator else None,
+            "created_at": str(latest_feedback.created_at),
+            "updated_by": latest_feedback.updated_by,
+            "updater_name": latest_feedback.updater.full_name if latest_feedback.updater else None,
+            "updated_at": str(latest_feedback.updated_at) if latest_feedback.updated_at else None,
+            "version": latest_feedback.version
+        }
     if include_conflicts and db:
         staff_ids = [s.staff_id for s in b.staff_assignments]
         conflicts = check_booking_conflicts(
@@ -364,6 +386,7 @@ def delete_staff(staff_id: int, db: Session = Depends(get_db), user: models.User
 def list_bookings(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
+    execution_status: Optional[str] = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user)
 ):
@@ -372,8 +395,12 @@ def list_bookings(
         q = q.filter(models.Booking.date_end >= start_date)
     if end_date:
         q = q.filter(models.Booking.date_start <= end_date)
+    if execution_status:
+        status_list = [s.strip() for s in execution_status.split(',') if s.strip()]
+        if status_list:
+            q = q.filter(models.Booking.execution_status.in_(status_list))
     bookings = q.order_by(models.Booking.date_start, models.Booking.time_start).all()
-    return [booking_to_dict(b) for b in bookings]
+    return [booking_to_dict(b, include_feedback=True) for b in bookings]
 
 
 @app.get("/api/bookings/by-date/{target_date}")
@@ -385,7 +412,7 @@ def get_bookings_by_date(target_date: date, db: Session = Depends(get_db), user:
 
     result = []
     for b in bookings:
-        b_dict = booking_to_dict(b, include_conflicts=True, db=db)
+        b_dict = booking_to_dict(b, include_conflicts=True, db=db, include_feedback=True)
         is_start_day = b.date_start == target_date
         is_end_day = b.date_end == target_date
         is_cross = b.date_end > b.date_start
@@ -422,7 +449,17 @@ def get_monthly_stats(year: int, month: int, db: Session = Depends(get_db), user
     stats = {}
     for d in range((end_of_month - start_of_month).days + 1):
         cur = start_of_month + timedelta(days=d)
-        stats[str(cur)] = {"date": str(cur), "booking_count": 0, "total_visitors": 0, "cross_day_count": 0, "conflict_count": 0}
+        stats[str(cur)] = {
+            "date": str(cur),
+            "booking_count": 0,
+            "total_visitors": 0,
+            "cross_day_count": 0,
+            "conflict_count": 0,
+            "pending_count": 0,
+            "ongoing_count": 0,
+            "completed_count": 0,
+            "need_feedback_count": 0
+        }
 
     conflict_pairs = set()
     active_bookings = [b for b in bookings if b.status != "cancelled"]
@@ -457,6 +494,9 @@ def get_monthly_stats(year: int, month: int, db: Session = Depends(get_db), user
         booking_conflict_ids.add(id1)
         booking_conflict_ids.add(id2)
 
+    today = date.today()
+    now = datetime.now().time()
+
     for b in bookings:
         d = b.date_start
         while d <= b.date_end:
@@ -470,6 +510,17 @@ def get_monthly_stats(year: int, month: int, db: Session = Depends(get_db), user
                     stats[key]["cross_day_count"] += 1
                 if b.id in booking_conflict_ids:
                     stats[key]["conflict_count"] += 1
+                exec_status = b.execution_status or "pending"
+                if exec_status == "pending":
+                    stats[key]["pending_count"] += 1
+                    if b.date_end < today or (b.date_end == today and b.time_end < str(now)[:5]):
+                        has_fb = any(f.version > 0 for f in b.feedbacks) if b.feedbacks else False
+                        if not has_fb:
+                            stats[key]["need_feedback_count"] += 1
+                elif exec_status == "ongoing":
+                    stats[key]["ongoing_count"] += 1
+                elif exec_status in ["completed", "no_show", "cancelled_temp", "abnormal"]:
+                    stats[key]["completed_count"] += 1
             d += timedelta(days=1)
 
     return list(stats.values())
@@ -675,7 +726,7 @@ def create_snapshot(db: Session = Depends(get_db), user: models.User = Depends(r
         models.Booking.date_start <= today,
         models.Booking.date_end >= today
     ).all()
-    snapshot_data = json.dumps([booking_to_dict(b) for b in bookings], ensure_ascii=False)
+    snapshot_data = json.dumps([booking_to_dict(b, include_feedback=True) for b in bookings], ensure_ascii=False)
     snapshot = models.ScheduleSnapshot(snapshot_date=today, snapshot_data=snapshot_data)
     db.add(snapshot)
     db.commit()
@@ -719,28 +770,289 @@ def get_upcoming_reminders(
     now = datetime.now().time()
     reminders = []
     for b in bookings:
-        b_dict = booking_to_dict(b)
+        b_dict = booking_to_dict(b, include_feedback=True)
         reminder_type = None
+
+        exec_status = b.execution_status or "pending"
+        has_fb = b_dict.get("has_feedback", False)
+
         if b.date_start == today:
             try:
                 from datetime import datetime as dt
                 start_dt = dt.strptime(b.time_start, "%H:%M").time()
-                time_diff = (dt.combine(today, start_dt) - dt.combine(today, now)).total_seconds() / 3600
-                if 0 < time_diff <= 2:
+                end_dt = dt.strptime(b.time_end, "%H:%M").time()
+                time_diff_start = (dt.combine(today, start_dt) - dt.combine(today, now)).total_seconds() / 3600
+                time_diff_end = (dt.combine(today, end_dt) - dt.combine(today, now)).total_seconds() / 3600
+
+                if 0 <= time_diff_end and time_diff_start <= 0 and exec_status != "ongoing":
+                    if exec_status in ["pending"]:
+                        b.execution_status = "ongoing"
+                        db.flush()
+                        b_dict["execution_status"] = "ongoing"
+                        reminder_type = "ongoing"
+                    elif exec_status == "ongoing":
+                        reminder_type = "ongoing"
+                elif time_diff_start > 0 and time_diff_start <= 2:
                     reminder_type = "urgent"
-                elif time_diff > 0:
+                elif time_diff_start > 0:
                     reminder_type = "today"
-                elif time_diff >= -2 and b.date_end == today:
-                    reminder_type = "ongoing"
             except ValueError:
                 reminder_type = "today"
         elif (b.date_start - today).days <= days:
             reminder_type = "upcoming"
 
+        if b.date_end <= today and not has_fb and exec_status in ["pending", "ongoing"]:
+            if b.date_end < today or (b.date_end == today and b.time_end < str(now)[:5]):
+                reminder_type = "need_feedback"
+
         if reminder_type:
             b_dict["reminder_type"] = reminder_type
             reminders.append(b_dict)
+
+    db.commit()
     return reminders
+
+
+VALID_RESULTS = {"completed", "no_show", "cancelled_temp", "abnormal"}
+
+
+def can_submit_feedback(booking: models.Booking, user: models.User) -> bool:
+    if user.role == "admin":
+        return True
+    if user.id == booking.created_by:
+        return True
+    return False
+
+
+@app.post("/api/bookings/{booking_id}/feedbacks")
+def create_feedback(
+    booking_id: int,
+    payload: schemas.BookingFeedbackCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_not_auditor)
+):
+    booking = db.query(models.Booking).filter(models.Booking.id == booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="预约不存在")
+
+    if not can_submit_feedback(booking, user):
+        raise HTTPException(status_code=403, detail="仅管理员或预约创建人可提交反馈")
+
+    if booking.status == "cancelled":
+        raise HTTPException(status_code=400, detail="已取消的预约无法提交反馈")
+
+    today = date.today()
+    if booking.date_end > today:
+        raise HTTPException(status_code=400, detail="预约尚未结束，暂不可提交反馈")
+
+    if payload.execution_result not in VALID_RESULTS:
+        raise HTTPException(status_code=400, detail=f"执行结果无效，可选值：{', '.join(VALID_RESULTS)}")
+
+    existing_count = db.query(models.BookingFeedback).filter(
+        models.BookingFeedback.booking_id == booking_id
+    ).count()
+    if existing_count > 0:
+        raise HTTPException(status_code=409, detail="该预约已有反馈，请使用修改接口")
+
+    feedback_data = payload.model_dump()
+    feedback_data.pop("change_reason", None)
+
+    db_feedback = models.BookingFeedback(
+        **feedback_data,
+        booking_id=booking_id,
+        created_by=user.id,
+        change_reason=payload.change_reason or "首次提交反馈"
+    )
+    db.add(db_feedback)
+
+    before_data = json.dumps(booking_to_dict(booking, include_feedback=True), ensure_ascii=False)
+    booking.execution_status = payload.execution_result
+    db.flush()
+
+    after_data = json.dumps(booking_to_dict(booking, include_feedback=True), ensure_ascii=False)
+    log = models.ChangeLog(
+        booking_id=booking_id,
+        operator_id=user.id,
+        change_type="feedback_create",
+        before_data=before_data,
+        after_data=after_data,
+        change_reason=payload.change_reason or "提交执行反馈"
+    )
+    db.add(log)
+
+    db.commit()
+    db.refresh(db_feedback)
+
+    return {
+        "id": db_feedback.id,
+        "booking_id": db_feedback.booking_id,
+        "actual_attendance": db_feedback.actual_attendance,
+        "actual_staff": db_feedback.actual_staff,
+        "execution_result": db_feedback.execution_result,
+        "feedback_note": db_feedback.feedback_note,
+        "change_reason": db_feedback.change_reason,
+        "created_by": db_feedback.created_by,
+        "creator_name": db_feedback.creator.full_name if db_feedback.creator else None,
+        "created_at": str(db_feedback.created_at),
+        "version": db_feedback.version
+    }
+
+
+@app.put("/api/bookings/{booking_id}/feedbacks")
+def update_feedback(
+    booking_id: int,
+    payload: schemas.BookingFeedbackUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_not_auditor)
+):
+    booking = db.query(models.Booking).filter(models.Booking.id == booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="预约不存在")
+
+    if not can_submit_feedback(booking, user):
+        raise HTTPException(status_code=403, detail="仅管理员或预约创建人可修改反馈")
+
+    feedbacks = db.query(models.BookingFeedback).filter(
+        models.BookingFeedback.booking_id == booking_id
+    ).order_by(models.BookingFeedback.version.desc()).all()
+
+    if not feedbacks:
+        raise HTTPException(status_code=404, detail="该预约尚无反馈，请先创建反馈")
+
+    latest = feedbacks[0]
+    before_data = json.dumps(booking_to_dict(booking, include_feedback=True), ensure_ascii=False)
+
+    update_data = payload.model_dump(exclude_unset=True)
+    update_data.pop("change_reason", None)
+
+    if "execution_result" in update_data and update_data["execution_result"] not in VALID_RESULTS:
+        raise HTTPException(status_code=400, detail=f"执行结果无效，可选值：{', '.join(VALID_RESULTS)}")
+
+    for key, val in update_data.items():
+        if hasattr(latest, key) and val is not None:
+            setattr(latest, key, val)
+
+    latest.version += 1
+    latest.updated_by = user.id
+    latest.change_reason = payload.change_reason or f"修改反馈（v{latest.version}）"
+
+    if "execution_result" in update_data:
+        booking.execution_status = update_data["execution_result"]
+
+    db.flush()
+    after_data = json.dumps(booking_to_dict(booking, include_feedback=True), ensure_ascii=False)
+
+    log = models.ChangeLog(
+        booking_id=booking_id,
+        operator_id=user.id,
+        change_type="feedback_update",
+        before_data=before_data,
+        after_data=after_data,
+        change_reason=payload.change_reason or "修改执行反馈"
+    )
+    db.add(log)
+
+    db.commit()
+    db.refresh(latest)
+
+    return {
+        "id": latest.id,
+        "booking_id": latest.booking_id,
+        "actual_attendance": latest.actual_attendance,
+        "actual_staff": latest.actual_staff,
+        "execution_result": latest.execution_result,
+        "feedback_note": latest.feedback_note,
+        "change_reason": latest.change_reason,
+        "created_by": latest.created_by,
+        "creator_name": latest.creator.full_name if latest.creator else None,
+        "created_at": str(latest.created_at),
+        "updated_by": latest.updated_by,
+        "updater_name": latest.updater.full_name if latest.updater else None,
+        "updated_at": str(latest.updated_at),
+        "version": latest.version
+    }
+
+
+@app.get("/api/bookings/{booking_id}/feedbacks")
+def get_booking_feedbacks(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user)
+):
+    booking = db.query(models.Booking).filter(models.Booking.id == booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="预约不存在")
+
+    feedbacks = db.query(models.BookingFeedback).filter(
+        models.BookingFeedback.booking_id == booking_id
+    ).order_by(models.BookingFeedback.version.desc()).all()
+
+    result = []
+    for fb in feedbacks:
+        result.append({
+            "id": fb.id,
+            "booking_id": fb.booking_id,
+            "actual_attendance": fb.actual_attendance,
+            "actual_staff": fb.actual_staff,
+            "execution_result": fb.execution_result,
+            "feedback_note": fb.feedback_note,
+            "change_reason": fb.change_reason,
+            "created_by": fb.created_by,
+            "creator_name": fb.creator.full_name if fb.creator else None,
+            "created_at": str(fb.created_at),
+            "updated_by": fb.updated_by,
+            "updater_name": fb.updater.full_name if fb.updater else None,
+            "updated_at": str(fb.updated_at) if fb.updated_at else None,
+            "version": fb.version
+        })
+    return result
+
+
+@app.get("/api/feedbacks")
+def list_all_feedbacks(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    execution_result: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user)
+):
+    q = db.query(models.BookingFeedback).join(models.Booking)
+    if start_date:
+        q = q.filter(models.Booking.date_end >= start_date)
+    if end_date:
+        q = q.filter(models.Booking.date_start <= end_date)
+    if execution_result:
+        result_list = [s.strip() for s in execution_result.split(',') if s.strip()]
+        if result_list:
+            q = q.filter(models.BookingFeedback.execution_result.in_(result_list))
+
+    feedbacks = q.order_by(models.BookingFeedback.created_at.desc()).all()
+    result = []
+    for fb in feedbacks:
+        result.append({
+            "id": fb.id,
+            "booking_id": fb.booking_id,
+            "booking_title": fb.booking.title if fb.booking else None,
+            "venue_name": fb.booking.venue.name if fb.booking and fb.booking.venue else None,
+            "booking_date_start": str(fb.booking.date_start) if fb.booking else None,
+            "booking_date_end": str(fb.booking.date_end) if fb.booking else None,
+            "booking_time_start": fb.booking.time_start if fb.booking else None,
+            "booking_time_end": fb.booking.time_end if fb.booking else None,
+            "creator_name": fb.booking.creator.full_name if fb.booking and fb.booking.creator else None,
+            "actual_attendance": fb.actual_attendance,
+            "actual_staff": fb.actual_staff,
+            "execution_result": fb.execution_result,
+            "feedback_note": fb.feedback_note,
+            "change_reason": fb.change_reason,
+            "created_by": fb.created_by,
+            "feedback_creator_name": fb.creator.full_name if fb.creator else None,
+            "created_at": str(fb.created_at),
+            "updated_by": fb.updated_by,
+            "updater_name": fb.updater.full_name if fb.updater else None,
+            "updated_at": str(fb.updated_at) if fb.updated_at else None,
+            "version": fb.version
+        })
+    return result
 
 
 if __name__ == "__main__":

@@ -64,6 +64,7 @@ class Booking(Base):
     visitor_count = Column(Integer, default=0)
     remark = Column(Text)
     status = Column(String(20), default="confirmed")  # confirmed, adjusted, cancelled
+    execution_status = Column(String(20), default="pending")  # pending, ongoing, completed, no_show, cancelled_temp, abnormal
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -72,6 +73,7 @@ class Booking(Base):
     creator = relationship("User", back_populates="bookings", foreign_keys=[created_by])
     staff_assignments = relationship("BookingStaff", back_populates="booking", cascade="all, delete-orphan")
     change_logs = relationship("ChangeLog", back_populates="booking", cascade="all, delete-orphan")
+    feedbacks = relationship("BookingFeedback", back_populates="booking", cascade="all, delete-orphan")
 
 
 class BookingStaff(Base):
@@ -108,3 +110,24 @@ class ScheduleSnapshot(Base):
     snapshot_date = Column(Date, nullable=False)
     snapshot_data = Column(Text, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class BookingFeedback(Base):
+    __tablename__ = "booking_feedbacks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id"), nullable=False)
+    actual_attendance = Column(Integer, default=0)
+    actual_staff = Column(String(500))
+    execution_result = Column(String(20), nullable=False)  # completed, no_show, cancelled_temp, abnormal
+    feedback_note = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_by = Column(Integer, ForeignKey("users.id"))
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    change_reason = Column(Text)
+    version = Column(Integer, default=1)
+
+    booking = relationship("Booking", back_populates="feedbacks")
+    creator = relationship("User", foreign_keys=[created_by])
+    updater = relationship("User", foreign_keys=[updated_by])

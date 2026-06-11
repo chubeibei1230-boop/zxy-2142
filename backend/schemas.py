@@ -205,3 +205,38 @@ class DayBookingStats(BaseModel):
     total_visitors: int
     cross_day_booking_count: int
     conflict_count: int = 0
+
+
+class BookingFeedbackBase(BaseModel):
+    actual_attendance: int = 0
+    actual_staff: Optional[str] = None
+    execution_result: str
+    feedback_note: Optional[str] = None
+    change_reason: Optional[str] = None
+
+
+class BookingFeedbackCreate(BookingFeedbackBase):
+    pass
+
+
+class BookingFeedbackUpdate(BaseModel):
+    actual_attendance: Optional[int] = None
+    actual_staff: Optional[str] = None
+    execution_result: Optional[str] = None
+    feedback_note: Optional[str] = None
+    change_reason: Optional[str] = None
+
+
+class BookingFeedback(BookingFeedbackBase):
+    id: int
+    booking_id: int
+    created_by: int
+    created_at: datetime
+    updated_by: Optional[int] = None
+    updated_at: Optional[datetime] = None
+    version: int
+    creator_name: Optional[str] = None
+    updater_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True

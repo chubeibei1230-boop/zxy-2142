@@ -44,10 +44,11 @@ export const api = {
   updateStaff: (id, data) => request(`/staff/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteStaff: (id) => request(`/staff/${id}`, { method: 'DELETE' }),
 
-  listBookings: (start, end) => {
+  listBookings: (start, end, executionStatus) => {
     const params = new URLSearchParams();
     if (start) params.set('start_date', start);
     if (end) params.set('end_date', end);
+    if (executionStatus) params.set('execution_status', executionStatus);
     return request(`/bookings?${params.toString()}`);
   },
   getBookingsByDate: (date) => request(`/bookings/by-date/${date}`),
@@ -57,6 +58,17 @@ export const api = {
   deleteBooking: (id) => request(`/bookings/${id}`, { method: 'DELETE' }),
   getBookingChangeLogs: (id) => request(`/bookings/${id}/change-logs`),
   checkConflict: (data) => request('/bookings/check-conflict', { method: 'POST', body: JSON.stringify(data) }),
+
+  createBookingFeedback: (bookingId, data) => request(`/bookings/${bookingId}/feedbacks`, { method: 'POST', body: JSON.stringify(data) }),
+  updateBookingFeedback: (bookingId, data) => request(`/bookings/${bookingId}/feedbacks`, { method: 'PUT', body: JSON.stringify(data) }),
+  getBookingFeedbacks: (bookingId) => request(`/bookings/${bookingId}/feedbacks`),
+  listAllFeedbacks: (start, end, executionResult) => {
+    const params = new URLSearchParams();
+    if (start) params.set('start_date', start);
+    if (end) params.set('end_date', end);
+    if (executionResult) params.set('execution_result', executionResult);
+    return request(`/feedbacks?${params.toString()}`);
+  },
 
   listChangeLogs: (start, end) => {
     const params = new URLSearchParams();
