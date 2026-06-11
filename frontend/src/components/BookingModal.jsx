@@ -70,9 +70,31 @@ function BookingModal({ open, onClose, onSave, editingBooking, venues, staff, ti
     }
   };
 
+  const validateForm = () => {
+    if (!form.date_start || !form.date_end) return '请选择日期';
+    const ds = new Date(form.date_start);
+    const de = new Date(form.date_end);
+    if (de < ds) return '结束日期不能早于开始日期';
+    if (form.date_start === form.date_end) {
+      if (!form.time_start || !form.time_end) return '请选择时间';
+      const [sh, sm] = form.time_start.split(':').map(Number);
+      const [eh, em] = form.time_end.split(':').map(Number);
+      const startMinutes = sh * 60 + sm;
+      const endMinutes = eh * 60 + em;
+      if (endMinutes <= startMinutes) return '同一天的结束时间必须晚于开始时间';
+    }
+    if (editingBooking && !form.change_reason?.trim()) return '请填写调整原因';
+    return null;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    const validationError = validateForm();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
     setLoading(true);
     try {
       const payload = {

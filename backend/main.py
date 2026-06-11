@@ -93,6 +93,30 @@ finally:
     init_db.close()
 
 
+def validate_booking_datetime(date_start, date_end, time_start, time_end):
+    if date_end < date_start:
+        raise HTTPException(status_code=400, detail="结束日期不能早于开始日期")
+    if date_start == date_end:
+        try:
+            from datetime import datetime as dt
+            ts = dt.strptime(time_start, "%H:%M")
+            te = dt.strptime(time_end, "%H:%M")
+            if te <= ts:
+                raise HTTPException(status_code=400, detail="同一天的结束时间必须晚于开始时间")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="时间格式无效，应为 HH:MM")
+
+
+def check_venue_in_use(db: Session, venue_id: int):
+    count = db.query(models.Booking).filter(models.Booking.venue_id == venue_id).count()
+    return count
+
+
+def check_staff_in_use(db: Session, staff_id: int):
+    count = db.query(models.BookingStaff).filter(models.BookingStaff.staff_id == staff_id).count()
+    return count
+
+
 def booking_to_dict(b: models.Booking):
     return {
         "id": b.id,
@@ -160,6 +184,9 @@ def delete_venue(venue_id: int, db: Session = Depends(get_db), user: models.User
     db_venue = db.query(models.Venue).filter(models.Venue.id == venue_id).first()
     if not db_venue:
         raise HTTPException(status_code=404, detail="讲解点不存在")
+    in_use = check_venue_in_use(db, venue_id)
+    if in_use > 0:
+        raise HTTPException(status_code=400, detail=f"该讲解点已被 {in_use} 个预约使用，无法删除。请先删除或修改相关预约。")
     db.delete(db_venue)
     db.commit()
     return {"success": True}
@@ -234,6 +261,9 @@ def delete_staff(staff_id: int, db: Session = Depends(get_db), user: models.User
     db_staff = db.query(models.Staff).filter(models.Staff.id == staff_id).first()
     if not db_staff:
         raise HTTPException(status_code=404, detail="人员不存在")
+    in_use = check_staff_in_use(db, staff_id)
+    if in_use > 0:
+        raise HTTPException(status_code=400, detail=f"该人员已被 {in_use} 个预约安排，无法删除。请先从相关预约中移除该人员。")
     db.delete(db_staff)
     db.commit()
     return {"success": True}
@@ -321,6 +351,8 @@ def get_monthly_stats(year: int, month: int, db: Session = Depends(get_db), user
 
 @app.post("/api/bookings")
 def create_booking(payload: schemas.BookingCreate, db: Session = Depends(get_db), user: models.User = Depends(require_not_auditor)):
+    validate_booking_datetime(payload.date_start, payload.date_end, payload.time_start, payload.time_end)
+
     booking_data = payload.model_dump()
     staff_ids = booking_data.pop("staff_ids", [])
     change_reason = booking_data.pop("change_reason", None)
@@ -362,6 +394,8 @@ def update_booking(booking_id: int, payload: schemas.BookingUpdate, db: Session 
     for key, val in update_data.items():
         if hasattr(db_booking, key) and val is not None:
             setattr(db_booking, key, val)
+
+    validate_booking_datetime(db_booking.date_start, db_booking.date_end, db_booking.time_start, db_booking.time_end)
 
     if staff_ids is not None:
         db.query(models.BookingStaff).filter(models.BookingStaff.booking_id == booking_id).delete()
@@ -486,6 +520,47 @@ def get_snapshot(snapshot_id: int, db: Session = Depends(get_db), user: models.U
         "snapshot_data": json.loads(snapshot.snapshot_data),
         "created_at": str(snapshot.created_at)
     }
+
+
+@app.get("/api/reminders/upcoming")
+def get_upcoming_reminders(
+    days: int = 3,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user)
+):
+    today = date.today()
+    end_date = today + timedelta(days=days)
+    bookings = db.query(models.Booking).filter(
+        models.Booking.date_start <= end_date,
+        models.Booking.date_end >= today,
+        models.Booking.status != "cancelled"
+    ).order_by(models.Booking.date_start, models.Booking.time_start).all()
+
+    now = datetime.now().time()
+    reminders = []
+    for b in bookings:
+        b_dict = booking_to_dict(b)
+        reminder_type = None
+        if b.date_start == today:
+            try:
+                from datetime import datetime as dt
+                start_dt = dt.strptime(b.time_start, "%H:%M").time()
+                time_diff = (dt.combine(today, start_dt) - dt.combine(today, now)).total_seconds() / 3600
+                if 0 < time_diff <= 2:
+                    reminder_type = "urgent"
+                elif time_diff > 0:
+                    reminder_type = "today"
+                elif time_diff >= -2 and b.date_end == today:
+                    reminder_type = "ongoing"
+            except ValueError:
+                reminder_type = "today"
+        elif (b.date_start - today).days <= days:
+            reminder_type = "upcoming"
+
+        if reminder_type:
+            b_dict["reminder_type"] = reminder_type
+            reminders.append(b_dict)
+    return reminders
 
 
 if __name__ == "__main__":

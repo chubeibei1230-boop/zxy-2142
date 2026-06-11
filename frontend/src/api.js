@@ -66,5 +66,7 @@ export const api = {
 
   createSnapshot: () => request('/snapshots', { method: 'POST' }),
   listSnapshots: () => request('/snapshots'),
-  getSnapshot: (id) => request(`/snapshots/${id}`)
+  getSnapshot: (id) => request(`/snapshots/${id}`),
+
+  getUpcomingReminders: (days = 3) => request(`/reminders/upcoming?days=${days}`)
 };
